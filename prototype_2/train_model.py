@@ -1,6 +1,5 @@
 # Import necessary libraries
 import pandas as pd
-import numpy as np
 import pickle
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
@@ -19,9 +18,7 @@ true_df['label'] = 0  # True news label
 
 # Combine datasets
 df = pd.concat([fake_df, true_df], axis=0)
-
-# Shuffle the data
-df = df.sample(frac=1).reset_index(drop=True)
+df = df.sample(frac=1).reset_index(drop=True)  # Shuffle the data
 
 # Preprocess the data
 X = df['text']
@@ -50,6 +47,27 @@ dt_model.fit(X_train, y_train)
 gbc_model.fit(X_train, y_train)
 rfc_model.fit(X_train, y_train)
 
+# Evaluate and display accuracy for each model
+def evaluate_model(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+    return accuracy_score(y_test, y_pred)
+
+# Logistic Regression accuracy
+lr_acc = evaluate_model(lr_model, X_test, y_test)
+print(f'Logistic Regression Accuracy: {lr_acc * 100:.2f}%')
+
+# Decision Tree accuracy
+dt_acc = evaluate_model(dt_model, X_test, y_test)
+print(f'Decision Tree Accuracy: {dt_acc * 100:.2f}%')
+
+# Gradient Boosting Classifier accuracy
+gbc_acc = evaluate_model(gbc_model, X_test, y_test)
+print(f'Gradient Boosting Classifier Accuracy: {gbc_acc * 100:.2f}%')
+
+# Random Forest Classifier accuracy
+rfc_acc = evaluate_model(rfc_model, X_test, y_test)
+print(f'Random Forest Classifier Accuracy: {rfc_acc * 100:.2f}%')
+
 # Save the trained models
 with open('model/lr_model.pkl', 'wb') as f:
     pickle.dump(lr_model, f)
@@ -59,24 +77,3 @@ with open('model/gbc_model.pkl', 'wb') as f:
     pickle.dump(gbc_model, f)
 with open('model/rfc_model.pkl', 'wb') as f:
     pickle.dump(rfc_model, f)
-
-# Evaluate the models
-def evaluate_model(model, X_test, y_test):
-    y_pred = model.predict(X_test)
-    return accuracy_score(y_test, y_pred)
-
-# Logistic Regression accuracy
-lr_acc = evaluate_model(lr_model, X_test, y_test)
-print(f'Logistic Regression Accuracy: {lr_acc}')
-
-# Decision Tree accuracy
-dt_acc = evaluate_model(dt_model, X_test, y_test)
-print(f'Decision Tree Accuracy: {dt_acc}')
-
-# Gradient Boosting Classifier accuracy
-gbc_acc = evaluate_model(gbc_model, X_test, y_test)
-print(f'Gradient Boosting Classifier Accuracy: {gbc_acc}')
-
-# Random Forest Classifier accuracy
-rfc_acc = evaluate_model(rfc_model, X_test, y_test)
-print(f'Random Forest Classifier Accuracy: {rfc_acc}')

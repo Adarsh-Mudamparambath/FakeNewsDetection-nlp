@@ -1,62 +1,129 @@
-# Import necessary libraries
 import streamlit as st
 import pickle
 import numpy as np
+import pandas as pd
+import torch
+from lime.lime_text import LimeTextExplainer
+from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
 
-# Load the TF-IDF vectorizer and models
-with open('model/vectorizer.pkl', 'rb') as f:
+# ==============================
+# Load Classical Models + Vectorizer
+# ==============================
+with open("model/vectorizer.pkl", "rb") as f:
     vectorizer = pickle.load(f)
 
-with open('model/lr_model.pkl', 'rb') as f:
-    lr_model = pickle.load(f)
+model_files = {
+    "Logistic Regression": "lr_model.pkl",
+    "Decision Tree": "dt_model.pkl",
+    "Gradient Boosting": "gbc_model.pkl",
+    "Random Forest": "rfc_model.pkl",
+    "SVM": "svm_model.pkl",
+    "XGBoost": "xgb_model.pkl",
+    "Stacked Ensemble": "stack_model.pkl",
+    "DistilBERT": "distilbert_model"   # special case
+}
 
-with open('model/dt_model.pkl', 'rb') as f:
-    dt_model = pickle.load(f)
+models = {}
+for name, file in model_files.items():
+    if name == "DistilBERT":
+        tokenizer = DistilBertTokenizerFast.from_pretrained(f"model/{file}")
+        models[name] = DistilBertForSequenceClassification.from_pretrained(f"model/{file}")
+    else:
+        with open(f"model/{file}", "rb") as f:
+            models[name] = pickle.load(f)
 
-with open('model/gbc_model.pkl', 'rb') as f:
-    gbc_model = pickle.load(f)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if "DistilBERT" in models:
+    models["DistilBERT"].to(device)
 
-with open('model/rfc_model.pkl', 'rb') as f:
-    rfc_model = pickle.load(f)
+# ==============================
+# Prediction helpers
+# ==============================
+def predict(news, model_choice):
+    if model_choice == "DistilBERT":
+        inputs = tokenizer(news, return_tensors="pt", truncation=True, padding=True, max_length=128).to(device)
+        with torch.no_grad():
+            outputs = models["DistilBERT"](**inputs)
+            probs = torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy()[0]
+        pred = int(np.argmax(probs))
+        return pred, probs[1]  # probability of Fake
+    else:
+        vectorized = vectorizer.transform([news])
+        model = models[model_choice]
+        if hasattr(model, "predict_proba"):
+            prob = model.predict_proba(vectorized)[0][1]
+        else:  # LinearSVC
+            decision = model.decision_function(vectorized)
+            prob = 1 / (1 + np.exp(-decision))[0]
+        pred = model.predict(vectorized)[0]
+        return pred, prob
 
-# Prediction function that returns both label and probability
-def predict_news(news, model):
-    vectorized_input = vectorizer.transform([news])
-    prediction = model.predict(vectorized_input)
-    probability = model.predict_proba(vectorized_input)[0][1]  # Probability of 'Fake' class (label 1)
-    return prediction[0], probability
+def lime_predict(texts):
+    vec = vectorizer.transform(texts)
+    return models[model_choice].predict_proba(vec)
 
-# Streamlit interface
-st.title("Fake News Detection App")
+# ==============================
+# Streamlit UI
+# ==============================
+st.set_page_config(page_title="Fake News Detector", page_icon="📰", layout="wide")
 
-# Input text area for user to enter the news
-news = st.text_area("Enter the news text to classify:")
+st.title("📰 Fake News Detection - NLP")
+st.markdown("### Detect whether a news article is **Fake** or **True** using ML & NLP")
 
-# If the classify button is clicked
+st.sidebar.title("⚙️ Options")
+model_choice = st.sidebar.selectbox("Select Model", list(model_files.keys()))
+st.sidebar.info("Choose from Classical ML models or DistilBERT.")
+
+# ---- Single Text Classification ----
+st.subheader("✍️ Test Single News Article")
+news = st.text_area("Enter news content here:", height=150)
+
 if st.button("Classify"):
-    # Get predictions and probabilities from all models
-    lr_pred, lr_prob = predict_news(news, lr_model)
-    dt_pred, dt_prob = predict_news(news, dt_model)
-    gbc_pred, gbc_prob = predict_news(news, gbc_model)
-    rfc_pred, rfc_prob = predict_news(news, rfc_model)
+    if not news.strip():
+        st.warning("⚠️ Please enter some text.")
+    else:
+        pred, prob = predict(news, model_choice)
+        label = "Fake" if pred == 1 else "True"
+        color = "red" if pred == 1 else "green"
 
-    # Convert the results into human-readable labels
-    def get_label(pred):
-        return "Fake" if pred == 1 else "True"
+        st.markdown(f"### ✅ Prediction: <span style='color:{color}'>{label}</span>", unsafe_allow_html=True)
+        st.progress(int(prob * 100))
+        st.write(f"**Probability of being Fake:** {prob*100:.2f}%")
 
-    # Display individual predictions from each model
-    st.write(f"**Logistic Regression Prediction**: {get_label(lr_pred)} (Fake : {lr_prob * 100:.2f}%)")
-    st.write(f"**Decision Tree Prediction**: {get_label(dt_pred)} (Fake : {dt_prob * 100:.2f}%)")
-    st.write(f"**Gradient Boosting Prediction**: {get_label(gbc_pred)} (Fake : {gbc_prob * 100:.2f}%)")
-    st.write(f"**Random Forest Prediction**: {get_label(rfc_pred)} (Fake : {rfc_prob * 100:.2f}%)")
+        # Explainability only for classical ML models
+        if model_choice != "DistilBERT" and hasattr(models[model_choice], "predict_proba"):
+            explainer = LimeTextExplainer(class_names=["True", "Fake"])
+            exp = explainer.explain_instance(
+                news,
+                lime_predict,
+                num_features=10,
+                labels=[1]
+            )
+            st.markdown("### 🔍 Words influencing prediction:")
+            for word, weight in exp.as_list(label=1):
+                word_color = "red" if weight > 0 else "green"
+                st.markdown(f"- <span style='color:{word_color}'>{word}</span> ({weight:.3f})", unsafe_allow_html=True)
 
-    # Calculate the average probability of being fake
-    avg_fake_prob = np.mean([lr_prob, dt_prob, gbc_prob, rfc_prob]) * 100
+# ---- Bulk Classification ----
+st.subheader("📂 Bulk News Classification")
+uploaded_file = st.file_uploader("Upload CSV (must have 'title' and 'text')", type=["csv"])
 
-    # Final combined prediction based on majority voting
-    fake_votes = sum([lr_pred, dt_pred, gbc_pred, rfc_pred])
-    final_prediction = "Fake" if fake_votes >= 2 else "True"
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file)
+    if "title" in df.columns and "text" in df.columns:
+        df["content"] = df["title"].astype(str) + " " + df["text"].astype(str)
+        preds, probs = [], []
+        for content in df["content"]:
+            pred, prob = predict(content, model_choice)
+            preds.append("Fake" if pred == 1 else "True")
+            probs.append(f"{prob*100:.2f}%")
+        df["Prediction"] = preds
+        df["Fake_Probability"] = probs
+        st.dataframe(df[["title", "Prediction", "Fake_Probability"]])
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button("Download Results", csv, "classified_news.csv", "text/csv")
+    else:
+        st.error("CSV must have 'title' and 'text' columns")
 
-    # Display the final combined prediction and fake probability percentage
-    st.write(f"**Combined Prediction (Voting)**: {final_prediction}")
-    st.write(f"**Fake News Probability**: {avg_fake_prob:.2f}%")
+st.markdown("---")
+st.caption("Powered by ML + DistilBERT 🚀")

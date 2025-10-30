@@ -1,79 +1,138 @@
-# Import necessary libraries
-import pandas as pd
+import os
 import pickle
+import pandas as pd
+import torch
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
-from sklearn.metrics import accuracy_score
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, StackingClassifier
+from sklearn.svm import LinearSVC
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+import xgboost as xgb
 
-# Load the dataset
-fake_df = pd.read_csv('data/Fake.csv')
-true_df = pd.read_csv('data/True.csv')
+from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification, Trainer, TrainingArguments
+from datasets import Dataset
 
-# Add labels to the datasets
-fake_df['label'] = 1  # Fake news label
-true_df['label'] = 0  # True news label
+# ===============================
+# Ensure model directory
+# ===============================
+os.makedirs("model", exist_ok=True)
 
-# Combine datasets
-df = pd.concat([fake_df, true_df], axis=0)
-df = df.sample(frac=1).reset_index(drop=True)  # Shuffle the data
+# ===============================
+# Load dataset
+# ===============================
+fake_df = pd.read_csv("data/Fake.csv")
+true_df = pd.read_csv("data/True.csv")
 
-# Preprocess the data
-X = df['text']
-y = df['label']
+fake_df["label"] = 1
+true_df["label"] = 0
 
-# Convert text data into TF-IDF features
-tfidf = TfidfVectorizer(stop_words='english', max_df=0.7)
+df = pd.concat([fake_df, true_df], axis=0).sample(frac=1).reset_index(drop=True)
+df["content"] = df["title"].astype(str) + " " + df["text"].astype(str)
+
+X = df["content"]
+y = df["label"]
+
+# ===============================
+# Classical ML models
+# ===============================
+print("\n🔹 Training Classical ML models...")
+
+tfidf = TfidfVectorizer(stop_words="english", max_df=0.7, ngram_range=(1,2), max_features=50000)
 X_tfidf = tfidf.fit_transform(X)
 
-# Save the TF-IDF vectorizer for later use
-with open('model/vectorizer.pkl', 'wb') as f:
+# Save vectorizer
+with open("model/vectorizer.pkl", "wb") as f:
     pickle.dump(tfidf, f)
 
-# Split the dataset
+# Train/test split
 X_train, X_test, y_train, y_test = train_test_split(X_tfidf, y, test_size=0.2, random_state=42)
 
-# Initialize the models
-lr_model = LogisticRegression()
-dt_model = DecisionTreeClassifier()
-gbc_model = GradientBoostingClassifier()
-rfc_model = RandomForestClassifier()
+# Models
+models = {
+    "lr_model.pkl": LogisticRegression(max_iter=2000),
+    "dt_model.pkl": DecisionTreeClassifier(),
+    "gbc_model.pkl": GradientBoostingClassifier(),
+    "rfc_model.pkl": RandomForestClassifier(),
+    "svm_model.pkl": LinearSVC(),
+    "xgb_model.pkl": xgb.XGBClassifier(eval_metric="logloss")
+}
 
-# Train the models
-lr_model.fit(X_train, y_train)
-dt_model.fit(X_train, y_train)
-gbc_model.fit(X_train, y_train)
-rfc_model.fit(X_train, y_train)
-
-# Evaluate and display accuracy for each model
-def evaluate_model(model, X_test, y_test):
+# Train & evaluate each
+for filename, model in models.items():
+    model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
-    return accuracy_score(y_test, y_pred)
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred)
+    rec = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    print(f"{filename.upper()} | Acc: {acc:.2f} | Prec: {prec:.2f} | Rec: {rec:.2f} | F1: {f1:.2f}")
+    with open(f"model/{filename}", "wb") as f:
+        pickle.dump(model, f)
 
-# Logistic Regression accuracy
-lr_acc = evaluate_model(lr_model, X_test, y_test)
-print(f'Logistic Regression Accuracy: {lr_acc * 100:.2f}%')
+# Stacking
+stack = StackingClassifier(
+    estimators=[
+        ("lr", LogisticRegression(max_iter=2000)),
+        ("rf", RandomForestClassifier()),
+        ("gbc", GradientBoostingClassifier()),
+        ("svm", LinearSVC()),
+        ("xgb", xgb.XGBClassifier(eval_metric="logloss"))
+    ],
+    final_estimator=LogisticRegression()
+)
+stack.fit(X_train, y_train)
+with open("model/stack_model.pkl", "wb") as f:
+    pickle.dump(stack, f)
 
-# Decision Tree accuracy
-dt_acc = evaluate_model(dt_model, X_test, y_test)
-print(f'Decision Tree Accuracy: {dt_acc * 100:.2f}%')
+print("✅ Classical models + Stacking saved successfully!")
 
-# Gradient Boosting Classifier accuracy
-gbc_acc = evaluate_model(gbc_model, X_test, y_test)
-print(f'Gradient Boosting Classifier Accuracy: {gbc_acc * 100:.2f}%')
+# ===============================
+# DistilBERT Training
+# ===============================
+print("\n🔹 Training DistilBERT model...")
 
-# Random Forest Classifier accuracy
-rfc_acc = evaluate_model(rfc_model, X_test, y_test)
-print(f'Random Forest Classifier Accuracy: {rfc_acc * 100:.2f}%')
+tokenizer = DistilBertTokenizerFast.from_pretrained("distilbert-base-uncased")
+dataset = Dataset.from_pandas(df[["content", "label"]])
 
-# Save the trained models
-with open('model/lr_model.pkl', 'wb') as f:
-    pickle.dump(lr_model, f)
-with open('model/dt_model.pkl', 'wb') as f:
-    pickle.dump(dt_model, f)
-with open('model/gbc_model.pkl', 'wb') as f:
-    pickle.dump(gbc_model, f)
-with open('model/rfc_model.pkl', 'wb') as f:
-    pickle.dump(rfc_model, f)
+def tokenize(batch):
+    return tokenizer(batch["content"], padding="max_length", truncation=True, max_length=128)
+
+dataset = dataset.map(tokenize, batched=True)
+
+# Train/test split for BERT
+train_test = dataset.train_test_split(test_size=0.2, seed=42)
+train_dataset = train_test["train"]
+test_dataset = train_test["test"]
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased", num_labels=2).to(device)
+
+training_args = TrainingArguments(
+    output_dir="./model/bert_results",
+    eval_strategy="epoch",   # ⚠️ your Transformers version expects eval_strategy
+    save_strategy="epoch",
+    per_device_train_batch_size=4,
+    per_device_eval_batch_size=4,
+    num_train_epochs=2,
+    logging_dir="./logs",
+    load_best_model_at_end=True,
+    save_total_limit=1,
+    no_cuda=False  # ✅ force GPU if available
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=test_dataset,
+    tokenizer=tokenizer
+)
+
+trainer.train()
+
+model.save_pretrained("model/distilbert_model")
+tokenizer.save_pretrained("model/distilbert_model")
+
+print("✅ DistilBERT model saved successfully in model/distilbert_model/")
